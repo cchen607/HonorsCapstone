@@ -1,0 +1,1034 @@
+---
+title: "CAP DATA Analysis 2"
+author: "Christopher Chen"
+date: "2024-12-20"
+output: html_document
+---
+
+## Start
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, results = FALSE}
+## LOAD PACKAGES
+library(readr) # read csvs
+library(readxl) # to read data
+library(tidyverse) # tidyverse ofc
+library(ggplot2) # for visualization
+library(tigris)  # for retrieving geographic data
+library(sf)      # for working with spatial data
+library(dplyr)   # for data manipulation
+library(zipcodeR) # to apply state and county names
+library(gridExtra) # for plot arrangement
+library(RColorBrewer) # colors
+library(stargazer) # for regression tables
+library(plm) # panel data 
+library(binsreg) # for binned scatterplot
+library(lmtest) # for coeftest
+library(ggrepel) # for labels
+
+options(tigris_use_cache = TRUE) 
+```
+
+```{r, results = FALSE}
+## READ DATA (make sure to set working directory first)
+
+## ACS DATA
+acs2018 <- read_excel("acsdata2018.xlsx")
+acs2019 <- read_excel("acsdata2019.xlsx")
+acs2020 <- read_excel("acsdata2020.xlsx")
+acs2021 <- read_excel("acsdata2021.xlsx")
+acs2022 <- read_excel("acsdata2022.xlsx")
+
+## SOCIAL CAPITAL DATA
+social_cap <- read_csv("social_capital_zipcodes.csv")
+```
+
+## Clean Data
+
+```{r, warnings=FALSE}
+## QUICK DATA CLEAN/EDIT
+acs2018 <- acs2018 %>%
+  slice(-(1:2)) %>% 
+  mutate(across(!zip, as.numeric))
+acs2018 <- zip_code_db %>%  # Zip Code Database from zipcodeR to add state names and counties
+  select(zipcode, state, county) %>% 
+  left_join(acs2018, by = c("zipcode"="zip"), multiple = "all") %>% 
+  arrange(zipcode) %>% 
+  mutate(zipcode = as.numeric(zipcode)) %>% 
+  rename(zip = zipcode)
+acs2019 <- acs2019 %>%
+  slice(-(1:2)) %>%
+  mutate(across(!zip, as.numeric))
+acs2019 <- zip_code_db %>%  # Zip Code Database from zipcodeR to add state names and counties
+  select(zipcode, state, county) %>%
+  left_join(acs2019, by = c("zipcode"="zip"), multiple = "all") %>%
+  arrange(zipcode) %>%
+  mutate(zipcode = as.numeric(zipcode)) %>%
+  rename(zip = zipcode)
+acs2020 <- acs2020 %>%
+  slice(-(1:2)) %>% 
+  mutate(across(!zip, as.numeric))
+acs2020 <- zip_code_db %>%  # Zip Code Database from zipcodeR to add state names and counties
+  select(zipcode, state, county) %>% 
+  left_join(acs2020, by = c("zipcode"="zip"), multiple = "all") %>% 
+  arrange(zipcode) %>% 
+  mutate(zipcode = as.numeric(zipcode)) %>% 
+  rename(zip = zipcode)
+acs2021 <- acs2021 %>%
+  slice(-(1:2)) %>%
+  mutate(across(!zip, as.numeric))
+acs2021 <- zip_code_db %>%  # Zip Code Database from zipcodeR to add state names and counties
+  select(zipcode, state, county) %>%
+  left_join(acs2021, by = c("zipcode"="zip"), multiple = "all") %>%
+  arrange(zipcode) %>%
+  mutate(zipcode = as.numeric(zipcode)) %>%
+  rename(zip = zipcode)
+acs2022 <- acs2022 %>%
+  slice(-(1:2)) %>% 
+  mutate(across(!zip, as.numeric))
+acs2022 <- zip_code_db %>%  # Zip Code Database from zipcodeR to add state names and counties
+  select(zipcode, state, county) %>% 
+  left_join(acs2022, by = c("zipcode"="zip"), multiple = "all") %>% 
+  arrange(zipcode) %>% 
+  mutate(zipcode = as.numeric(zipcode)) %>% 
+  rename(zip = zipcode)
+  
+
+social_cap <- social_cap %>% 
+  select(zip, county, num_below_p50, pop2018, ec_zip, ec_se_zip, ec_grp_mem_zip, exposure_grp_mem_zip, 
+         bias_grp_mem_zip, clustering_zip, support_ratio_zip, volunteering_rate_zip, civic_organizations_zip) %>% 
+  rename(county_num = county) %>% 
+  filter(!is.na(ec_zip))
+```
+
+```{r}
+## State region categorization code
+categorize_region <- function(state_column) {
+  # Define regions and corresponding state abbreviations
+  northeast <- c("CT", "ME", "MA", "NH", "RI", "VT", "NJ", "NY", "PA")
+  midwest <- c("IL", "IN", "IA", "KS", "MI", "MN", "MO", "NE", "ND", "OH", "SD", "WI")
+  south <- c("AL", "AR", "DE", "FL", "GA", "KY", "LA", "MD", "MS", "NC", "OK", "SC", "TN", "TX", "VA", "WV", "DC")
+  west <- c("AK", "AZ", "CA", "CO", "HI", "ID", "MT", "NV", "NM", "OR", "UT", "WA", "WY")
+  
+  # Assign regions based on state abbreviations
+  region <- ifelse(state_column %in% northeast, "Northeast",
+            ifelse(state_column %in% midwest, "Midwest",
+            ifelse(state_column %in% south, "South",
+            ifelse(state_column %in% west, "West", "Unknown"))))
+  
+  return(region)
+}
+```
+
+```{r}
+## JOIN SOCIAL CAP DATA WITH 2018 AND REMOVE EXTRA OUTCOMES
+acs_sc_2018 <- inner_join(acs2018, social_cap, by = join_by(zip)) %>% 
+  select(-med_inc, -mean_inc, -percapita_inc, -under_poverty, -pop, -pop_lf, -employed, 
+         -unemployed, -not_in_lf, -cm_publictransit, -cm_wfm, -moved)  %>%
+  mutate(high_ec = factor(ifelse(ec_zip > 0.8763, 1, 0))) %>% # add binary variable, 1 = high EC, 0 = low EC 
+  mutate(region = categorize_region(state))
+
+## SEPARATE `unemp_rate` FROM YEARS
+unemp_2019 <- acs2019 %>%
+  select(zip, unemp_rate)
+unemp_2020 <- acs2020 %>%
+  select(zip, unemp_rate)
+unemp_2021 <- acs2021 %>%
+  select(zip, unemp_rate)
+unemp_2022 <- acs2022 %>%
+  select(zip, unemp_rate)
+```
+
+## Plots
+
+```{r}
+## FIND CHANGE IN UNEMPLOYMENT ACROSS YEARS
+acs_18_20 <- left_join(acs_sc_2018, unemp_2020, by = "zip") %>% 
+  mutate(d_unemp_rate = unemp_rate.x - unemp_rate.y) 
+acs_18_22 <- left_join(acs_sc_2018, unemp_2022, by = "zip") %>% 
+  mutate(d_unemp_rate = unemp_rate.y - unemp_rate.x)
+acs_20_22 <- left_join(acs_sc_2018, unemp_2020, by = "zip") %>% 
+  select(-unemp_rate.x) %>% 
+  mutate(unemp_rate = unemp_rate.y) %>% 
+  select(-unemp_rate.y) %>% 
+  left_join(unemp_2022, by = "zip") %>% 
+  mutate(d_unemp_rate = unemp_rate.x - unemp_rate.y)
+d_unemp_18_20 <- acs_18_20 %>% 
+  select(zip, d_unemp_rate) %>% 
+  mutate(d_ur_18_20 = d_unemp_rate) %>% 
+  select(-d_unemp_rate)
+d_unemp_18_22 <- acs_18_22 %>% 
+  select(zip, d_unemp_rate)%>% 
+  mutate(d_ur_18_22 = d_unemp_rate) %>% 
+  select(-d_unemp_rate)
+d_unemp_20_22 <- acs_20_22 %>% 
+  select(zip, d_unemp_rate) %>% 
+  mutate(d_ur_20_22 = d_unemp_rate) %>% 
+  select(-d_unemp_rate)
+
+acs_d_unemp <- acs_sc_2018 %>% 
+  select(-unemp_rate) %>% 
+  left_join(d_unemp_18_20, by = "zip") %>% 
+  left_join(d_unemp_20_22, by = "zip") %>% 
+  left_join(d_unemp_18_22, by = "zip") 
+```
+
+```{r}
+p1 <- ggplot(acs_18_20, aes(x = d_unemp_rate, y = high_ec)) +
+  geom_boxplot(fill = "lightgreen") +
+  coord_cartesian(xlim = c(0,10)) +
+  ggtitle("Change in Unemployment Rate 2018-2020, grouped by High/Low EC")
+p2 <- ggplot(acs_20_22, aes(x = d_unemp_rate, y = high_ec)) +
+  geom_boxplot(fill = "lightgreen") +
+  coord_cartesian(xlim = c(0,10)) +
+  ggtitle("Change in Unemployment Rate 2020-2022, grouped by High/Low EC")
+p3 <- ggplot(acs_18_22, aes(x = d_unemp_rate, y = high_ec)) +
+  geom_boxplot(fill = "lightblue") +
+  coord_cartesian(xlim = c(0,10)) +
+  ggtitle("Change in Unemployment Rate 2018-2022, grouped by High/Low EC")
+grid.arrange(p1, p2,p3, ncol = 1)
+```
+
+```{r}
+ggplot(acs_18_20) +
+  geom_point(aes(x = ec_zip, y = d_unemp_rate, color = region), alpha = 0.2) +
+  labs(title = "Change in Unemployment Rate vs. Economic connectedness 2018-2020") +
+  coord_cartesian(ylim = c(0,10)) +
+  geom_vline(xintercept = 0.8763, linetype = "dashed", color = "red", size = 1)
+ggplot(acs_20_22) +
+  geom_point(aes(x = ec_zip, y = d_unemp_rate, color = region), alpha = 0.2) +
+  labs(title = "Change in Unemployment Rate vs. Economic connectedness 2020-2022") +
+  coord_cartesian(ylim = c(0,10)) +
+  geom_vline(xintercept = 0.8763, linetype = "dashed", color = "red", size = 1)
+ggplot(acs_18_22) +
+  geom_point(aes(x = ec_zip, y = d_unemp_rate, color = region), alpha = 0.2) +
+  labs(title = "Change in Unemployment Rate vs. Economic connectedness 2018-2022") +
+  coord_cartesian(ylim = c(0,10)) +
+  geom_vline(xintercept = 0.8763, linetype = "dashed", color = "red", size = 1)
+```
+
+```{r}
+ggplot(acs_18_22) +
+  geom_point(aes(x = ec_zip, y = d_unemp_rate, color = region), alpha = 0.2) +
+  geom_smooth(aes(x = ec_zip, y = d_unemp_rate), method = "lm", se = FALSE) +
+  facet_wrap(~region, scales = "free") +
+  labs(title = "Change in Unemployment Rate vs. Economic connectedness 2018-2022") +
+  coord_cartesian(ylim = c(-20,20))
+
+
+bins_18_22 = acs_18_22 %>% mutate(bin = ntile(d_unemp_rate, n=50))
+bins_18_22 = bins_18_22 %>% group_by(bin, region) %>% summarise(xmean = mean(ec_zip), ymean = mean(d_unemp_rate))
+
+ggplot(bins_18_22, aes(x=xmean, y=ymean)) + 
+  geom_point(aes(color = region)) + 
+  geom_smooth(method = "lm", se = FALSE) +
+  facet_wrap(~region, scales = "free") +
+  labs(title = "Change in Unemployment Rate vs. Economic connectedness 2018-2022 by Region",
+       y = "Average Change in Unemployment",
+       x = "Average EC") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red", size = 1)+ 
+  coord_cartesian(ylim = c(-10,10)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black")) 
+
+```
+
+## Maps
+
+```{r}
+# Retrieve U.S. state boundaries 
+states <- states(cb = TRUE) %>%       # Use cb = TRUE for simplified geometries
+  mutate(state = STUSPS) %>% 
+  filter(state != c("AK") & state != c("HI") & state != c("MP") & state != c("VI") & state != c("AS") & state != c("PR") & state != c("GU"))
+
+state_d_ur <- acs_d_unemp %>% 
+  select(zip, state, d_ur_18_20, d_ur_20_22, d_ur_18_22) %>% 
+  group_by(state) %>% 
+  summarize(mean_18_20 = mean(d_ur_18_20, na.rm = TRUE),
+            mean_20_22 = mean(d_ur_20_22, na.rm = TRUE), 
+            mean_18_22 = mean(d_ur_18_22, na.rm = TRUE)) 
+state_d_ur <- states %>% 
+  left_join(state_d_ur, by = join_by(state))
+```
+
+```{r}
+ggplot(state_d_ur) +
+  geom_sf(aes(fill = mean_18_20)) +
+  scale_fill_gradient(low= 'green', high= 'red') +
+  labs(title = "Change in Unemployment by State 2018-2020")
+ggplot(state_d_ur) +
+  geom_sf(aes(fill = mean_20_22)) +
+  scale_fill_gradient(low= 'green', high= 'red') +
+  labs(title = "Change in Unemployment by State 2020-2022")
+ggplot(state_d_ur) +
+  geom_sf(aes(fill = mean_18_22)) +
+  scale_fill_gradient(low= 'green', high= 'red') +
+  labs(title = "Change in Unemployment by State 2018-2022")
+```
+
+```{r}
+counties <- counties(cb=TRUE) %>% 
+  rename(county = NAME) %>% 
+  filter(STUSPS != c("AK") & STUSPS != c("HI") & STUSPS != c("MP") & STUSPS != c("VI") & STUSPS != c("AS") & STUSPS != c("PR") & STUSPS != c("GU"))
+
+county_d_ur <- acs_d_unemp %>% 
+  select(zip, county, d_ur_18_20, d_ur_20_22, d_ur_18_22) %>% 
+  group_by(county) %>% 
+  summarize(mean_18_20 = mean(d_ur_18_20, na.rm = TRUE),
+            mean_20_22 = mean(d_ur_20_22, na.rm = TRUE), 
+            mean_18_22 = mean(d_ur_18_22, na.rm = TRUE)) %>% 
+  filter(mean_18_20 <= 3.0 & mean_18_20 >= -3.0)
+
+county_d_ur <- counties %>% 
+  left_join(county_d_ur, by = join_by(county))
+```
+
+```{r}
+ggplot(county_d_ur) +
+  geom_sf(aes(fill = mean_18_20), color = NA) +
+  scale_fill_gradient(low= 'green', high= 'red') +
+  labs(title = "Change in Unemployment by County 2018-2020")
+```
+
+```{r}
+# Get ZCTA shapefile for CA
+ca_zcta <- zctas(cb = FALSE, state = "CA", year = 2010)
+county_boundary <- counties(state = "CA", cb = TRUE, year = 2021) %>%
+  filter(NAME %in% c("San Francisco", "Marin", "Contra Costa", "San Mateo",
+                     "Alameda", "Santa Clara")) %>%
+  st_as_sf()
+
+sf_zcta <- st_intersection(ca_zcta, county_boundary)
+
+sf_d_ur <-  acs_d_unemp %>% 
+  select(zip, county, d_ur_18_20, d_ur_20_22, d_ur_18_22, ec_zip)
+
+sf_d_ur <- sf_zcta %>% 
+  mutate(zip = as.numeric(ZCTA5CE10)) %>% 
+  left_join(sf_d_ur, by = join_by(zip))
+```
+
+```{r}
+ggplot(sf_d_ur) +
+  geom_sf(aes(fill = d_ur_18_22), color = NA) +
+  scale_fill_viridis_c(option = "C") +
+  labs(title = "Change in Unemployment by ZIP Code in Bay Area, 2018-2022")
+ggplot(sf_d_ur) +
+  geom_sf(aes(fill = d_ur_18_20), color = NA) +
+  scale_fill_viridis_c(option = "C") +
+  labs(title = "Change in Unemployment by ZIP Code in Bay Area, 2018-2020")
+ggplot(sf_d_ur) +
+  geom_sf(aes(fill = d_ur_20_22), color = NA) +
+  scale_fill_viridis_c(option = "C") +
+  labs(title = "Change in Unemployment by ZIP Code in Bay Area, 2018-2022")
+ggplot(sf_d_ur) +
+  geom_sf(aes(fill = ec_zip), color = NA) +
+  scale_fill_viridis_c(option = "C") +
+  labs(title = "EC by ZIP Code in Bay Area, 2018")
+```
+
+## Unemployment Regressions
+
+```{r}
+### Merge data sets by unemployment and mutate a `year` variable 
+
+sc <- social_cap %>% 
+  select(zip, ec_zip)
+
+acs2018_unemp <- inner_join(acs2018, sc, by = join_by(zip)) %>%
+  select(-med_inc, -percapita_inc, -under_poverty, -pop_lf, -employed,
+         -unemployed, -not_in_lf)  %>%
+  mutate(high_ec = ifelse(ec_zip > 0.8763, 1, 0)) %>% # add binary variable, 1 = high EC, 0 = low EC
+  mutate(region = categorize_region(state)) %>% 
+  mutate(year = 2018)
+acs2019_unemp <- inner_join(acs2019, sc, by = join_by(zip)) %>%
+  select(-med_inc, -percapita_inc, -under_poverty, -pop_lf, -employed,
+         -unemployed, -not_in_lf)  %>%
+  mutate(high_ec = ifelse(ec_zip > mean(ec_zip), 1, 0)) %>% # add binary variable, 1 = high EC, 0 = low EC
+  mutate(region = categorize_region(state)) %>%
+  mutate(year = 2019)
+acs2020_unemp <- inner_join(acs2020, sc, by = join_by(zip)) %>%
+  select(-med_inc, -percapita_inc, -under_poverty, -pop_lf, -employed,
+         -unemployed, -not_in_lf)  %>%
+  mutate(high_ec = ifelse(ec_zip > mean(ec_zip), 1, 0)) %>% # add binary variable, 1 = high EC, 0 = low EC
+  mutate(region = categorize_region(state)) %>% 
+  mutate(year = 2020)
+acs2021_unemp <- inner_join(acs2021, sc, by = join_by(zip)) %>%
+  select(-med_inc, -percapita_inc, -under_poverty, -pop_lf, -employed,
+         -unemployed, -not_in_lf)  %>%
+  mutate(high_ec = ifelse(ec_zip > mean(ec_zip), 1, 0)) %>% # add binary variable, 1 = high EC, 0 = low EC
+  mutate(region = categorize_region(state)) %>%
+  mutate(year = 2021)
+acs2022_unemp <- inner_join(acs2022, sc, by = join_by(zip)) %>%
+  select(-med_inc, -percapita_inc, -under_poverty, -pop_lf, -employed,
+         -unemployed, -not_in_lf)  %>%
+  mutate(high_ec = ifelse(ec_zip > mean(ec_zip), 1, 0)) %>% # add binary variable, 1 = high EC, 0 = low EC
+  mutate(region = categorize_region(state)) %>% 
+  mutate(year = 2022)
+```
+
+```{r}
+unemp <- bind_rows(list(acs2018_unemp, acs2019_unemp,acs2020_unemp, acs2021_unemp, acs2022_unemp), .id = "id") %>% 
+  mutate(post = ifelse(year >= 2020, 1, 0)) %>% # create binary variable based on 2020
+  mutate_at(c("year", "region"), as.factor)  %>% 
+  mutate(mean_inc = mean_inc/1000)
+unemp <- pdata.frame(unemp, index = c("region", "year")) # declare as panel data
+unemp_small <- bind_rows(list(acs2018_unemp,acs2020_unemp, acs2022_unemp), .id = "id") %>% 
+  mutate(post = ifelse(year >= 2020, 1, 0)) %>% # create binary variable based on 2020
+  mutate_at(c("year", "region"), as.factor) %>% 
+  mutate(mean_inc = mean_inc/1000)
+unemp_small <- pdata.frame(unemp_small, index = c("region", "year")) # declare as panel data
+
+```
+
+```{r}
+stargazer(unemp, type = "text")
+```
+
+```{r}
+## RUN REGRESSIONS
+model <- lm(unemp_rate ~ ec_zip, data = unemp) # basic model
+summary(model)
+model_2 <- lm(unemp_rate ~ ec_zip + med_age + male + bach_25 + white, data = unemp) # with controls
+summary(model_2)
+model_3 <- lm(unemp_rate ~ ec_zip + year, data = unemp) # year fixed effects
+summary(model_3)
+model_4 <- lm(unemp_rate ~ ec_zip + region, data = unemp) # year fixed effects
+summary(model_4)
+```
+
+```{r}
+stargazer(model, model_2, type = "html", no.space=TRUE, title = "Regression Results")
+```
+
+```{r}
+stargazer(model_3, model_4, type = "html", no.space=TRUE, title = "Year and Region")
+```
+
+```{r}
+## RUN REGRESSIONS
+mod0 <- lm(unemp_rate ~ ec_zip, data = unemp_small) # basic model
+summary(mod0)
+mod1 <- lm(unemp_rate ~ ec_zip + year, data = unemp_small) # basic model
+summary(mod1)
+mod2 <- lm(unemp_rate ~ ec_zip + ec_zip*year, data = unemp_small) # year fixed effects/interaction
+summary(mod2)
+mod3 <- plm(unemp_rate ~ ec_zip, data = unemp_small,
+            index = c("region", "year"),
+                      model = "within",
+                      effect = "twoways") # year and region fixed effects
+# coeftest(mod2, vcov = vcovHC, type = "HC1")
+mod4 <- plm(unemp_rate ~ ec_zip + mean_inc + med_age + male + bach_25 + white, data = unemp_small,
+            index = c("region", "year"),
+                      model = "within",
+                      effect = "twoways") # with demographics
+# coeftest(mod3, vcov = vcovHC, type = "HC1")
+
+```
+
+```{r}
+rob_se <- list(sqrt(diag(vcovHC(mod0, type = "HC1"))),
+               sqrt(diag(vcovHC(mod1, type = "HC1"))),
+               sqrt(diag(vcovHC(mod2, type = "HC1"))),
+               sqrt(diag(vcovHC(mod3, type = "HC1"))),
+               sqrt(diag(vcovHC(mod4, type = "HC1"))))
+```
+
+```{r}
+stargazer(mod0,
+          mod1,
+          mod2,
+          mod3,
+          mod4,
+          digits = 3,
+          header = FALSE,
+          type = "html", 
+          se = rob_se,
+          title = "Regression of EC Zip on Unemployment Rate",
+          no.space=TRUE,
+          model.numbers = FALSE,
+          column.labels = c("(1)", "(2)", "(3)", "(4)"))
+
+```
+
+## Difference in Difference
+
+```{r}
+## DID based on EC_ZIP
+unemp_did <- unemp %>% 
+  mutate_at(c("high_ec", "post"), as.numeric) %>% 
+  mutate(did = as.numeric(high_ec*post))
+```
+
+```{r}
+didreg <- lm(unemp_rate ~ high_ec*post, data = unemp_did)
+summary(didreg)
+```
+
+```{r}
+stargazer(didreg, type = "text")
+```
+
+```{r}
+
+ec_diff <- unemp %>%
+  group_by(high_ec) %>%
+  summarise(unemp_rate = mean(unemp_rate, na.rm = TRUE)) # Find mean unemployment rate between low/high EC in 2018
+low_pre2020 <- ec_diff[1,2]
+high_pre2020 <- ec_diff[2,2]
+
+unemp_diff <- unemp %>% 
+  filter(year == 2018 | year == 2022) %>% 
+  group_by(year, high_ec) %>% 
+  summarize(unemp_rate = mean(unemp_rate, na.rm = TRUE)) %>% # Find difference in unemp before and after treatment for low/high ec
+  rename(ec = high_ec)
+unemp_diff$ec <- factor(unemp_diff$ec, levels = c(0,1), labels = c("Low EC", "High EC"))
+unemp_diff <- as.tibble(unemp_diff)
+
+# Low EC group before 2020
+low_ec_18 <- unemp_diff[1,3]
+# High EC group before 2020
+high_ec_18 <- unemp_diff[2,3]
+# Low EC group after 2020
+low_ec_22 <- unemp_diff[3,3]
+# High EC group after 2020
+high_ec_22 <- unemp_diff[4,3]
+
+# Calculate counterfactual outcome
+high_ec_counterfactual <- tibble(
+  year = c("2018", "2022"), 
+  ec = c("High EC (Counterfactual)","High EC (Counterfactual)"),
+  unemp_rate = as.numeric(c(high_ec_18, high_ec_18-(low_ec_18-low_ec_22)))
+  ) 
+high_ec_counter <- high_ec_counterfactual[2,3]
+
+# Data points for treatment event
+intervention <- tibble(
+    year = c("2020", "2020", "2020"),
+    ec = c("High EC", "Low EC", "High EC (Counterfactual)"),
+    unemp_rate = as.numeric(c((high_ec_18+high_ec_counter)/2, (low_ec_22+low_ec_18)/2,(high_ec_18+high_ec_counter)/2))
+  ) 
+
+##unemp_rate = as.numeric(c((high_ec_18+high_ec_22)/2, (low_ec_22+low_ec_18)/2,(high_ec_18+high_ec_counter)/2)) # alternative
+
+# Combine data
+did_plotdata <- bind_rows(unemp_diff, 
+                          high_ec_counterfactual, 
+                          intervention)
+as.data.frame(did_plotdata)
+
+```
+
+```{r}
+did_plotdata %>% 
+  mutate(label = if_else(year == "2022", as.character(ec), NA_character_)) %>%
+  ggplot(aes(x=year,y=unemp_rate, group=ec)) +
+  geom_line(aes(color=ec), size=1) +
+  geom_vline(xintercept = "2020", linetype="dotted", 
+             color = "black", size=1.1) + 
+  scale_color_brewer(palette = "Dark2") +
+  scale_y_continuous(limits = c(2,8)) +
+  geom_label_repel(aes(label = label),
+                   nudge_x = 0.5, nudge_y = -0.5,
+                   na.rm = TRUE) +
+  guides(color=FALSE) +
+  labs(x="Year", y="Mean Unemployment", title="Difference in Difference of High/Low EC after COVID") +
+  annotate(
+    "text",
+    x = "2022",
+    y = 3.7,
+    label = "{D-i-D}",
+    angle = 90,
+    size = 3
+  )
+```
+
+## Main Model
+
+```{r}
+## RUN REGRESSIONS by BINARY EC  
+
+mod0 <- lm(unemp_rate ~ high_ec, data = unemp) # basic model
+#summary(mod0)
+mod1 <- lm(unemp_rate ~ high_ec + year, data = unemp) # basic model
+#summary(mod1)
+mod2 <- lm(unemp_rate ~ high_ec + high_ec*year, data = unemp) # year fixed effects/interaction
+#summary(mod2)
+mod3 <- lm(unemp_rate ~ high_ec + year + state, data = unemp)
+#summary(mod3)
+mod4 <- lm(unemp_rate ~ high_ec + year + high_ec*year + state + mean_inc + med_age + male + bach_25 + white, data = unemp)
+#summary(mod4)
+# mod3 <- plm(unemp_rate ~ ec_zip, data = unemp_small,
+#             index = c("region", "year"),
+#                       model = "within",
+#                       effect = "twoways") # year and region fixed effects
+# coeftest(mod2, vcov = vcovHC, type = "HC1")
+# mod4 <- plm(unemp_rate ~ ec_zip + mean_inc + med_age + male + bach_25 + white, data = unemp_small,
+#             index = c("region", "year"),
+#                       model = "within",
+#                       effect = "twoways") # with demographics
+# coeftest(mod3, vcov = vcovHC, type = "HC1")
+stargazer(mod1,
+          mod2,
+          mod3,
+          mod4,
+          digits = 3,
+          header = FALSE,
+          type = "html", 
+          title = "Regression of High EC on Unemployment Rate",
+          no.space=TRUE,
+          omit = "state",
+          omit.stat = "f",
+          model.numbers = FALSE,
+          column.labels = c("(1)", "(2)", "(3)", "(4)"),
+          dep.var.labels="Unemployment Rate",
+          covariate.labels=c("High EC", "2019", "2020", "2021", "2022", "High EC:2019", "High EC:2020", "High EC:2021", "High EC:2022",
+                             "Income", "Age", "Gender (male)", "Bachelor's", "Race (white)"),
+          add.lines=list(c('State Fixed Effects', "NO", "NO", "YES", "YES")))
+
+```
+
+```{r}
+stargazer(mod0,
+          mod1,
+          mod2,
+          mod3,
+          mod4,
+          digits = 3,
+          header = FALSE,
+          type = "text", 
+          title = "Regression of High EC on Unemployment Rate",
+          no.space=TRUE,
+          omit = "state",
+          omit.stat = "f",
+          model.numbers = FALSE,
+          column.labels = c("(1)", "(2)", "(3)", "(4)", "(5)"))
+
+```
+
+## MAIN DID
+
+```{r}
+# summary(mod0)
+mod1 <- lm(unemp_rate ~ high_ec + post, data = unemp) # basic model
+# summary(mod1)
+mod2 <- lm(unemp_rate ~ high_ec + post + high_ec*post, data = unemp) # year fixed effects/interaction
+# summary(mod2)
+mod3 <- lm(unemp_rate ~ high_ec + post + high_ec*post + state, data = unemp)
+# summary(mod3)
+mod4 <- lm(unemp_rate ~ high_ec + post + high_ec*post + state, data = unemp)
+#summary(mod4)
+didmain <- lm(unemp_rate ~ high_ec + post + high_ec*post + state + mean_inc + med_age + male + bach_25 
+           + white, data = unemp)
+#summary(mod5)
+stargazer(mod1,
+          mod2,
+          didmain,
+          digits = 3,
+          header = FALSE,
+          type = "text", 
+          title = "Regression of High EC on Unemployment Rate w/ Post Period",
+          dep.var.labels="Unemployment Rate",
+          covariate.labels=c("High EC", "Post", "Income", "Age", "Gender (male)", "Bachelor's", "Race (white)", "High EC:Post"),
+          no.space=TRUE,
+          omit = "state",
+          model.numbers = FALSE,
+          column.labels = c("(1)", "(2)", "(3)"),
+          add.lines=list(c('State Fixed effects', "NO", "NO", "YES")))
+```
+
+```{r}
+beta_0 <- didmain$coefficients[1]
+beta_2 <- didmain$coefficients[2]
+beta_1 <- didmain$coefficients[3]
+beta_3 <- didmain$coefficients[59]
+
+didmain_plot<- tibble(
+  year = c("2018", "2020", "2022", 
+           "2018", "2020", "2022", 
+           "2018", "2020", "2022"), 
+  ec = c("High EC (Counterfactual)","High EC (Counterfactual)", "High EC (Counterfactual)",
+         "High EC","High EC","High EC",
+         "Low EC","Low EC","Low EC"),
+  unemp_rate = as.numeric(c(beta_0+beta_2, (beta_0+beta_2)+(beta_1)/2, beta_0+beta_1+beta_2,
+                            beta_0+beta_2, (beta_0+beta_2)+(beta_1+beta_3)/2, beta_0+beta_1+beta_2+beta_3,
+                            beta_0, beta_0+(beta_1)/2, beta_0+beta_1)))
+as.data.frame(didmain_plot)
+
+```
+
+```{r}
+didmain_plot %>% 
+  mutate(label = if_else(year == "2022", as.character(ec), NA_character_)) %>%
+  ggplot(aes(x=year,y=unemp_rate, group=ec)) +
+  geom_line(aes(color=ec), size=1) +
+  geom_vline(xintercept = "2020", linetype="dotted", 
+             color = "red", size=1.1) + 
+  scale_color_brewer(palette = "Set1") +
+  # scale_y_continuous(limits = c(2,8)) +
+  geom_label_repel(aes(label = label),
+                   nudge_x = 0.5, nudge_y = 0.22,
+                   na.rm = TRUE) +
+  guides(color=FALSE) +
+  labs(x="Year", y="Mean Unemployment", title="Difference in Difference of High/Low EC after COVID") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))
+  # annotate(
+  #   "text",
+  #   x = "2022",
+  #   y = 3.7,
+  #   label = "{D-i-D}",
+  #   angle = 90,
+  #   size = 3
+  # )
+```
+
+```{r}
+# summary(mod0)
+mod1 <- lm(unemp_rate ~ high_ec , data = unemp) # basic model
+# summary(mod1)
+mod2 <- lm(unemp_rate ~ high_ec + year, data = unemp) # year fixed effects/interaction
+# summary(mod2)
+mod3 <- lm(unemp_rate ~ high_ec + year + state, data = unemp)
+# summary(mod3)
+mod4 <- lm(unemp_rate ~ high_ec + year + state, data = unemp)
+#summary(mod4)
+mod5 <- lm(unemp_rate ~ high_ec + year + high_ec*year + state + mean_inc + med_age + male + bach_25 
+           + white, data = unemp)
+#summary(mod5)
+stargazer(mod1,
+          mod2,
+          mod4,
+          mod5,
+          digits = 3,
+          header = FALSE,
+          type = "text", 
+          title = "Regression of High EC on Unemployment Rate w/ Year Effects",
+          dep.var.labels="Unemployment Rate",
+          
+          no.space=TRUE,
+          omit = "state",
+          model.numbers = FALSE,
+          column.labels = c("(1)", "(2)", "(3)", "(4)"),
+          add.lines=list(c('State Fixed effects', "NO", "NO", "YES", "YES")))
+```
+
+```{r}
+hist(social_cap$ec_zip, col="darkorange1", ylim = c(0,3500), main = "Distribution of ZIP Code EC")
+title(xlab = "Economic Connectedness (EC)", line = 2)
+median(social_cap$ec_zip)
+mean(social_cap$ec_zip)
+
+hist(covid_unemp$ec_zip, xaxp=c(0.5,1.5,2), col="darkorange1", breaks=15, ylim = c(0,2000), main = "Distribution of County EC")
+title(xlab = "Economic Connectedness (EC)", line = 2)
+median(covid_unemp$ec_zip)
+mean(covid_unemp$ec_zip)
+```
+
+
+
+## COVID Data
+
+```{r}
+## Read files from Dec 31st of each year 2020-2022
+covid_01_01_21 <- read_csv("COVID-19-master/COVID-19-master/csse_covid_19_data/csse_covid_19_daily_reports/01-01-2021.csv")
+covid_12_31_20 <- read_csv("COVID-19-master/COVID-19-master/csse_covid_19_data/csse_covid_19_daily_reports/12-31-2020.csv") %>% 
+  filter(!is.na(FIPS)) %>% 
+  mutate(year = 2020) %>% 
+  select(FIPS, Admin2, Province_State, year, Confirmed, Deaths, Incident_Rate, Case_Fatality_Ratio) %>% 
+  mutate(Province_State = state.abb[match(Province_State,state.name)]) %>% 
+  filter(!is.na(Admin2)) %>% 
+  rename(county = Admin2) %>% 
+  rename(state = Province_State)
+covid_12_31_21 <- read_csv("COVID-19-master/COVID-19-master/csse_covid_19_data/csse_covid_19_daily_reports/12-31-2021.csv")%>% 
+  filter(!is.na(FIPS)) %>% 
+  mutate(year = 2021) %>% 
+  select(FIPS, Admin2, Province_State, year, Confirmed, Deaths, Incident_Rate, Case_Fatality_Ratio) %>% 
+  mutate(Province_State = state.abb[match(Province_State,state.name)]) %>% 
+  filter(!is.na(Admin2)) %>% 
+  rename(county = Admin2) %>% 
+  rename(state = Province_State)
+covid_12_31_22 <- read_csv("COVID-19-master/COVID-19-master/csse_covid_19_data/csse_covid_19_daily_reports/12-31-2022.csv")%>% 
+  filter(!is.na(FIPS)) %>% 
+  mutate(year = 2022) %>% 
+  select(FIPS, Admin2, Province_State, year, Confirmed, Deaths, Incident_Rate, Case_Fatality_Ratio) %>% 
+  mutate(Province_State = state.abb[match(Province_State,state.name)]) %>% 
+  filter(!is.na(Admin2)) %>% 
+  rename(county = Admin2) %>% 
+  rename(state = Province_State)
+```
+
+```{r}
+# COVID DATA CLEAN
+covid_2020 <- covid_12_31_20 %>% 
+  rename(confirmed = Confirmed) %>% 
+  rename(deaths = Deaths) %>% 
+  rename(incident_rate = Incident_Rate) %>% 
+  rename(fatality_ratio = Case_Fatality_Ratio)
+covid_2021 <- covid_12_31_21 %>% 
+  merge(covid_12_31_20, by = c("FIPS", "county", "state")) %>% 
+  rename(year = year.x) %>% 
+  mutate(confirmed = Confirmed.x - Confirmed.y) %>% 
+  mutate(deaths = Deaths.x - Deaths.y) %>% 
+  mutate(incident_rate = Incident_Rate.x - Incident_Rate.y) %>% 
+  mutate(fatality_ratio = Case_Fatality_Ratio.x) %>% 
+  select(FIPS, county, state, year, confirmed, deaths, incident_rate, fatality_ratio)
+covid_2022 <- covid_12_31_22 %>% 
+  merge(covid_12_31_21, by = c("FIPS", "county", "state")) %>% 
+  rename(year = year.x) %>% 
+  mutate(confirmed = Confirmed.x - Confirmed.y) %>% 
+  mutate(deaths = Deaths.x - Deaths.y) %>% 
+  mutate(incident_rate = Incident_Rate.x - Incident_Rate.y) %>% 
+  mutate(fatality_ratio = Case_Fatality_Ratio.x) %>% 
+  select(FIPS, county, state, year, confirmed, deaths, incident_rate, fatality_ratio)
+covid_data <- bind_rows(list(covid_2020, covid_2021, covid_2022))
+```
+
+```{r}
+
+## Merge unemp data with COVID data
+
+unemp_county <- unemp %>% 
+  group_by(county, state, year) %>% 
+  summarise(mean_inc = mean(mean_inc), unemp_rate = mean(unemp_rate), ec_zip = mean(ec_zip), 
+            pop = sum(pop), med_age = mean(med_age), male = mean(male), bach_25 = mean(bach_25), white = mean(white)) %>%
+  mutate(county = gsub(" County", "", county))
+
+covid_unemp <- unemp_county %>% 
+  merge(covid_data, by = c("county", "year", "state")) %>% 
+  mutate(high_ec = ifelse(ec_zip > mean(ec_zip), 1, 0))  %>% 
+  mutate(case_rate = (confirmed/pop)*100) %>% 
+  mutate(death_rate = (deaths/pop)*100) %>% 
+  filter(case_rate < 100) %>% 
+  filter(case_rate >= 0.00)
+
+## Add shape file to the dataframe by county
+
+counties_covid <- counties %>% 
+  rename(state = STUSPS)
+covid_map <- covid_unemp %>% 
+  inner_join(counties_covid, by = c("county", "state"))
+
+```
+
+```{r}
+ggplot(covid_map) +
+  geom_sf(aes(fill = case_rate, geometry = geometry))
+
+```
+
+```{r}
+# mod0 <- lm(unemp_rate ~ high_ec, data = covid_unemp) # basic model
+# summary(mod0)
+mod1 <- lm(unemp_rate ~ high_ec + year, data = covid_unemp) # basic model
+# summary(mod1)
+mod2 <- lm(unemp_rate ~ high_ec+ high_ec*year, data = covid_unemp) # year fixed effects/interaction
+# summary(mod2)
+mod3 <- lm(unemp_rate ~ high_ec + year + state, data = covid_unemp)
+# summary(mod3)
+mod4 <- lm(unemp_rate ~ high_ec + year + high_ec*year + state + case_rate, data = covid_unemp)
+#summary(mod4)
+mod5 <- lm(unemp_rate ~ high_ec + year + high_ec*year + state + mean_inc + med_age + male + bach_25 
+           + white, data = covid_unemp)
+# summary(mod4)
+mod6 <- lm(unemp_rate ~ high_ec + year + high_ec*year + state + mean_inc + med_age + male + bach_25 
+           + white + case_rate, data = covid_unemp)
+stargazer(mod1,
+          mod2,
+          mod3,
+          mod4,
+          mod5,
+          mod6,
+          digits = 3,
+          header = FALSE,
+          type = "html", 
+          title = "Regression of High EC on Unemployment Rate with COVID Numbers",
+          no.space=TRUE,
+          omit = "state",
+          omit.stat = "f",
+          model.numbers = FALSE,
+          column.labels = c("(1)", "(2)", "(3)", "(4)", "(5)", "(6)"),
+          add.lines=list(c('Time Fixed effects', "NO", "YES", "YES", "YES", "YES", "YES"), 
+                         c('State Fixed effects', "NO", "NO", "YES", "YES", "YES", "YES")))
+
+```
+
+```{r}
+# mod0 <- lm(unemp_rate ~ high_ec, data = covid_unemp) # basic model
+# summary(mod0)
+mod1 <- lm(unemp_rate ~ high_ec + year, data = covid_no_LA) # basic model
+# summary(mod1)
+mod2 <- lm(unemp_rate ~ high_ec+ high_ec*year, data = covid_no_LA) # year fixed effects/interaction
+# summary(mod2)
+mod3 <- lm(unemp_rate ~ high_ec + year + state, data = covid_no_LA)
+# summary(mod3)
+mod4 <- lm(unemp_rate ~ high_ec + year + high_ec*year + state + confirmed + deaths, data = covid_no_LA)
+#summary(mod4)
+mod5 <- lm(unemp_rate ~ high_ec + year + high_ec*year + state + mean_inc + med_age + male + bach_25 
+           + white, data = covid_no_LA)
+# summary(mod5)
+mod6 <- lm(unemp_rate ~ high_ec + year + high_ec*year + state + mean_inc + med_age + male + bach_25 
+           + white + confirmed + deaths, data = covid_no_LA)
+# summary(mod6)
+stargazer(mod1,
+          mod2,
+          mod3,
+          mod4,
+          mod5,
+          mod6,
+          digits = 3,
+          header = FALSE,
+          type = "text", 
+          title = "Regression of High EC on Unemployment Rate with COVID Numbers (without LA 2022)",
+          no.space=TRUE,
+          omit = "state",
+          omit.stat = "f",
+          model.numbers = FALSE,
+          column.labels = c("(1)", "(2)", "(3)", "(4)", "(5)", "(6)"),
+          add.lines=list(c('Time Fixed effects', "NO", "YES", "YES", "YES", "YES", "YES"), 
+                         c('State Fixed effects', "NO", "NO", "YES", "YES", "YES", "YES")))
+          
+
+```
+
+```{r}
+ggplot(covid_unemp) +
+  geom_point(aes(x = ec_zip, y = confirmed))
+ggplot(covid_unemp) +
+  geom_point(aes(x = ec_zip, y = deaths))
+ggplot(covid_unemp) +
+  geom_point(aes(x = ec_zip, y = case_rate))
+ggplot(covid_unemp) +
+  geom_point(aes(x = case_rate, y = unemp_rate))
+ggplot(covid_unemp) +
+  geom_point(aes(x = ec_zip, y = death_rate))
+ggplot(covid_unemp) +
+  geom_histogram(aes(x=case_rate))
+
+
+```
+
+```{r}
+
+ggplot(covid_unemp, aes(x = case_rate, y = unemp_rate)) +
+  geom_point() +
+  labs(title = "Unemployment Rate vs. Case Rate",
+       y = "Unemployment",
+       x = "Case Rate")  + 
+  geom_smooth(method = "lm", se = FALSE, color = "red")
+
+bins_covid_unemp <- covid_unemp %>% mutate(bin = ntile(unemp_rate, n=125))
+bins_covid_unemp = bins_covid_unemp %>% group_by(bin, high_ec) %>% summarise(xmean = mean(case_rate), ymean = mean(unemp_rate))
+
+ggplot(bins_covid_unemp, aes(x=xmean, y=ymean)) + 
+  geom_point(aes(color = high_ec)) + 
+  facet_wrap(~high_ec, scales = "fixed", nrow = 2) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(title = "Unemployment Rate vs. Case Rate by EC",
+       y = "Average Change in Unemployment",
+       x = "Average Case Rate") 
+
+bins_covid_unemp <- covid_unemp %>% mutate(bin = ntile(unemp_rate, n=250))
+bins_covid_unemp = bins_covid_unemp %>% group_by(bin) %>% summarise(xmean = mean(case_rate), ymean = mean(unemp_rate))
+ggplot(bins_covid_unemp, aes(x=xmean, y=ymean)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", se = FALSE) +
+  #annotate("text",x=30,y=10,label=(paste0("slope==",coef(lm(bins_covid_unemp$ymean~bins_covid_unemp$xmean))[2])),parse=TRUE) +
+  labs(title = "Unemployment Rate vs. Case Rate",
+       y = "Average Unemployment",
+       x = "Average Case Rate") 
+```
+
+```{r}
+ggplot(covid_unemp, aes(x = ec_zip, y = case_rate)) +
+  geom_point() +
+  labs(title = "Case Rate vs EC",
+       y = "Case Rate",
+       x = "EC")  + 
+  geom_smooth(method = "lm", se = FALSE, color = "red")
+
+bins_covid_unemp <- covid_unemp %>% mutate(bin = ntile(case_rate, n=125))
+bins_covid_unemp = bins_covid_unemp %>% group_by(bin) %>% summarise(xmean = mean(ec_zip), ymean = mean(case_rate))
+
+ggplot(bins_covid_unemp, aes(x=xmean, y=ymean)) + 
+  geom_point() + 
+  #facet_wrap(~high_ec, scales = "fixed", nrow = 2) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(title = "Case Rate vs. EC",
+       y = "Average Case Rate",
+       x = "Average EC") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))
+
+bins_covid_unemp <- covid_unemp %>% mutate(bin = ntile(unemp_rate, n=250))
+bins_covid_unemp = bins_covid_unemp %>% group_by(bin) %>% summarise(xmean = mean(case_rate), ymean = mean(unemp_rate))
+ggplot(bins_covid_unemp, aes(x=xmean, y=ymean)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", se = FALSE) +
+  #annotate("text",x=30,y=10,label=(paste0("slope==",coef(lm(bins_covid_unemp$ymean~bins_covid_unemp$xmean))[2])),parse=TRUE) +
+  labs(title = "Unemployment Rate vs. Case Rate",
+       y = "Average Unemployment",
+       x = "Average Case Rate") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))
+```
+
+```{r}
+mod1 <- lm(unemp_rate ~ case_rate, data = covid_unemp)
+#summary(mod1)
+mod2 <- lm(unemp_rate ~ case_rate + case_rate*high_ec, data = covid_unemp)
+#summary(mod2)
+mod3 <- lm(unemp_rate ~ case_rate + case_rate*high_ec + year + state + mean_inc + med_age + male + bach_25 
+           + white, data = covid_unemp)
+mod4 <- lm(unemp_rate ~ case_rate + case_rate*high_ec + year + county + mean_inc + med_age + male + bach_25 
+           + white, data = covid_unemp)
+stargazer(mod1,
+          mod2,
+          mod3,
+          mod4,
+          digits = 3,
+          header = FALSE,
+          type = "html", 
+          title = "Regression of Case Rate on Unemployment Rate",
+          no.space=TRUE,
+          omit = c("year", "state", "county"),
+          dep.var.labels="Unemployment Rate",
+          covariate.labels=c("Case Rate", "High EC", "Income ($1000's)", "Age", "Gender (male)", 
+                             "Bachelor's", "Race (white)", "Case Rate:High EC"),
+          omit.stat = "f",
+          model.numbers = FALSE,
+          column.labels = c("(1)", "(2)", "(3)", "(4)"),
+          add.lines=list(c('Fixed effects', "None", "None", "Year and State", "Year and County")))
+```
+
+## Summary Stats Tables
+
+```{r}
+stargazer(unemp, type = "html")
+```
+
+```{r}
+stargazer(covid_unemp, type = "html")
+```
+
+
+```{r}
+ggplot(unemp) +
+  geom_point(aes(x=ec_zip, y = mean_inc))
+
+bins_inc <- unemp %>% mutate(bin = ntile(mean_inc, n=250))
+bins_inc = bins_inc %>% group_by(bin) %>% summarise(xmean = mean(ec_zip), ymean = mean(mean_inc))
+ggplot(bins_inc, aes(x=xmean, y=ymean)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", se = FALSE) +
+  #annotate("text",x=30,y=10,label=(paste0("slope==",coef(lm(bins_covid_unemp$ymean~bins_covid_unemp$xmean))[2])),parse=TRUE) +
+  labs(title = "Average Income vs. EC ZIP",
+       y = "Average Income",
+       x = "Average EC ZIP") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))
+```
+

@@ -5,4 +5,4 @@ This project examines the effect that social capital, mainly economic connectedn
 ### Information
 Code file in R Markdown used for my UCR Honors Capstone Project. The code was used to produce all necessary visualizations and regressions for my analysis. Data files necessary are stored in the `data` folder. The final paper, slides presentation, and poster presentation have also been included.
 
-Project completed for graduation with University Honors. Faculty-mentored by Dr. Veronic Sovero (UCR) and Dr. Bree Land (UCSB). Presented at the PREDOC Research Conference at the World Bank in Washington, D.C., Auguest 2025.
+Project completed for graduation with University Honors. Faculty-mentored by Dr. Veronica Sovero (UCR) and Dr. Bree Land (UCSB). Presented at the PREDOC Research Conference at the World Bank in Washington, D.C., Auguest 2025.
